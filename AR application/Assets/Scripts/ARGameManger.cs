@@ -7,43 +7,42 @@ public class ARGameManager : MonoBehaviour
     public static ARGameManager I { get; private set; }
 
     [Header("Game Rule")]
-    [Tooltip("Seconds per round")]
     public float roundSeconds = 60f;
 
-    [Header("UI (Optional)")]
-    public Text timeText;      // Unity UI Text (TMP 사용해도 됨 - 아래 주석 참고)
+    [Header("UI")]
+    public Text timeText;
     public Text scoreText;
-    public GameObject startHintPanel;   // "Tap plane to start" 같은 안내 패널
-    public GameObject resultPanel;      // 결과 패널
-    public Text resultText;             // 결과 텍스트
-    public Button restartButton;        // 재시작 버튼
+    public GameObject startHintPanel;
+    public GameObject resultPanel;
+    public Text resultText;
+    public Button restartButton;
 
-    private float _timeLeft;
-    private int _score;
-    private bool _isRunning;
+    float _timeLeft;
+    int _score;
+    bool _isRunning;
 
-    private readonly List<GameObject> _spawned = new List<GameObject>();
-
+    readonly List<GameObject> _spawned = new List<GameObject>();
     public bool IsRunning => _isRunning;
 
-    private void Awake()
+    void Awake()
     {
         if (I != null && I != this) { Destroy(gameObject); return; }
         I = this;
-
-        // DontDestroyOnLoad(gameObject); // 단일 씬이면 필요 없음
     }
 
-    private void Start()
+    void Start()
     {
         if (restartButton != null)
-            restartButton.onClick.AddListener(RestartRound);
+        {
+            restartButton.onClick.RemoveAllListeners();
+           
+        }
 
-        ResetToWaitingState();
+        ResetToWaiting();
         RefreshUI();
     }
 
-    private void Update()
+    void Update()
     {
         if (!_isRunning) return;
 
@@ -59,8 +58,6 @@ public class ARGameManager : MonoBehaviour
 
     public void BeginRound()
     {
-        if (_isRunning) return;
-
         _score = 0;
         _timeLeft = roundSeconds;
         _isRunning = true;
@@ -79,11 +76,13 @@ public class ARGameManager : MonoBehaviour
 
         if (resultPanel != null) resultPanel.SetActive(true);
         if (resultText != null) resultText.text = $"Collected: {_score}";
+
+        RefreshUI();
     }
 
-    public void AddScore(int amount)
+    public void AddScore(int value)
     {
-        _score += amount;
+        _score += value;
         if (_score < 0) _score = 0;
         RefreshUI();
     }
@@ -104,13 +103,12 @@ public class ARGameManager : MonoBehaviour
 
     public void RestartRound()
     {
-        // 라운드 종료/대기 상태로 리셋 + 오브젝트 삭제
         ClearSpawned();
-        ResetToWaitingState();
+        ResetToWaiting();
         RefreshUI();
     }
 
-    private void ResetToWaitingState()
+    void ResetToWaiting()
     {
         _isRunning = false;
         _score = 0;
@@ -120,13 +118,10 @@ public class ARGameManager : MonoBehaviour
         if (resultPanel != null) resultPanel.SetActive(false);
     }
 
-    private void RefreshUI()
+    void RefreshUI()
     {
         if (timeText != null)
-        {
-            int sec = Mathf.CeilToInt(_timeLeft);
-            timeText.text = $"Time: {sec}";
-        }
+            timeText.text = $"Time: {Mathf.CeilToInt(_timeLeft)}";
 
         if (scoreText != null)
             scoreText.text = $"Relics: {_score}";

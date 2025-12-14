@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.XR.ARFoundation;
@@ -10,89 +10,138 @@ public class ARTapToStartSpawner : MonoBehaviour
     [Header("References")]
     public ARPlaneManager planeManager;
 
-    [Header("Relic Spawn (Multiple)")]
-    public List<GameObject> relicPrefabs = new List<GameObject>(); //  ���� ��
-    public int spawnCount = 5;
-    public float spawnRadius = 1.2f;
-    public float minDistanceFromCenter = 0.3f;
+    [Header("Prefabs")]
+    public List<GameObject> relicPrefabs = new List<GameObject>();
+
+    [Header("Spawn Rule (C)")]
+    public int firstSpawnCount = 5;     // 첫 시작 때 N개
+    public int addSpawnCount = 1;       // 게임 중 추가는 1개
+    public float addSpawnCooldown = 1.0f;
+    public int maxTotalSpawn = 30;      // 너무 많이 쌓이는 거 방지(원하면 늘려)
+
+    [Header("Distance Rule (Donut)")]
+    public float minTapDistanceFromCamera = 1.5f;  // 가까운 바닥 터치는 무시(걸어가게)
+    public float minSpawnDistanceFromCamera = 1.5f;
+    public float maxSpawnDistanceFromCamera = 3.0f;
+
+    [Header("Placement")]
+    public float yOffset = 0.02f;
 
     [Header("Options")]
     public bool disablePlaneVisualAfterStart = true;
 
-    private ARRaycastManager _raycast;
-    private static readonly List<ARRaycastHit> Hits = new List<ARRaycastHit>();
-    private bool _hasSpawnedThisRound = false;
+    ARRaycastManager _raycast;
+    static readonly List<ARRaycastHit> Hits = new List<ARRaycastHit>();
 
-    private void Awake()
+    bool _started;              // 라운드 시작했는지(첫 스폰 완료)
+    float _nextAddTime;         // 추가 스폰 쿨타임
+    int _totalSpawnedThisRound; // 이번 라운드 총 스폰 수
+
+    void Awake()
     {
         _raycast = GetComponent<ARRaycastManager>();
     }
 
-    private void Update()
+    void Update()
     {
         if (ARGameManager.I == null) return;
-        if (_hasSpawnedThisRound && ARGameManager.I.IsRunning) return;
 
-        if (Input.touchCount == 0) return;
-        Touch touch = Input.GetTouch(0);
-        if (touch.phase != TouchPhase.Began) return;
-        if (IsPointerOverUI(touch.position)) return;
+        if (!TryGetPressDown(out Vector2 screenPos, out int fingerId))
+            return;
 
-        if (_raycast.Raycast(touch.position, Hits, TrackableType.PlaneWithinPolygon))
+        if (IsPointerOverUI(screenPos, fingerId))
+            return;
+
+        // 바닥(Plane)에서만 시작/추가 스폰
+        if (!_raycast.Raycast(screenPos, Hits, TrackableType.PlaneWithinPolygon | TrackableType.PlaneEstimated))
+            return;
+
+        Vector3 hitPos = Hits[0].pose.position;
+        var cam = Camera.main;
+        if (cam == null) return;
+
+        float tapDist = Vector3.Distance(new Vector3(cam.transform.position.x, hitPos.y, cam.transform.position.z), hitPos);
+        if (tapDist < minTapDistanceFromCamera)
+            return; // 가까우면 무시 → 멀리 걸어가서 터치해야 됨
+
+        // 1) 첫 시작: N개 스폰 + 게임 시작
+        if (!_started && !ARGameManager.I.IsRunning)
         {
-            Pose pose = Hits[0].pose;
+            ARGameManager.I.ClearSpawned();
+            _totalSpawnedThisRound = 0;
 
-            if (!_hasSpawnedThisRound)
-            {
-                SpawnRelicsAround(pose.position);
-                _hasSpawnedThisRound = true;
-            }
+            SpawnMultiple(firstSpawnCount, hitPos);
 
-            if (!ARGameManager.I.IsRunning)
-                ARGameManager.I.BeginRound();
+            _started = true;
+            _nextAddTime = Time.time + addSpawnCooldown;
+
+            ARGameManager.I.BeginRound();
 
             if (disablePlaneVisualAfterStart)
                 DisablePlanes();
-        }
-    }
-
-    private void SpawnRelicsAround(Vector3 center)
-    {
-        if (relicPrefabs == null || relicPrefabs.Count == 0)
-        {
-            Debug.LogError("[ARTapToStartSpawner] relicPrefabs is empty.");
             return;
         }
 
-        ARGameManager.I.ClearSpawned();
-
-        for (int i = 0; i < spawnCount; i++)
+        // 2) 게임 중: 쿨타임 후 1개 추가 스폰
+        if (ARGameManager.I.IsRunning && _started)
         {
-            GameObject prefab = relicPrefabs[Random.Range(0, relicPrefabs.Count)];
-            if (prefab == null) continue;
+            if (Time.time < _nextAddTime) return;
+            if (_totalSpawnedThisRound >= maxTotalSpawn) return;
 
-            Vector3 pos = GetRandomPositionOnXZ(center, spawnRadius, minDistanceFromCenter);
-            Quaternion rot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
-
-            GameObject go = Instantiate(prefab, pos, rot);
-            ARGameManager.I.RegisterSpawned(go);
+            SpawnMultiple(addSpawnCount, hitPos);
+            _nextAddTime = Time.time + addSpawnCooldown;
         }
     }
 
-    private Vector3 GetRandomPositionOnXZ(Vector3 center, float radius, float minR)
+    void SpawnMultiple(int count, Vector3 around)
     {
-        float t = Random.Range(0f, 1f);
-        float r = Mathf.Sqrt(t) * radius;
-        r = Mathf.Max(r, minR);
+        if (relicPrefabs == null || relicPrefabs.Count == 0) return;
 
-        float angle = Random.Range(0f, Mathf.PI * 2f);
-        float x = Mathf.Cos(angle) * r;
-        float z = Mathf.Sin(angle) * r;
+        var cam = Camera.main;
+        if (cam == null) return;
 
-        return new Vector3(center.x + x, center.y, center.z + z);
+        for (int i = 0; i < count; i++)
+        {
+            if (_totalSpawnedThisRound >= maxTotalSpawn) break;
+
+            Vector3 pos = FindDonutPosition(around, cam.transform.position, minSpawnDistanceFromCamera, maxSpawnDistanceFromCamera);
+            pos.y = around.y + yOffset;
+
+            GameObject prefab = relicPrefabs[Random.Range(0, relicPrefabs.Count)];
+            if (prefab == null) continue;
+
+            Quaternion rot = Quaternion.Euler(0f, Random.Range(0f, 360f), 0f);
+            GameObject go = Instantiate(prefab, pos, rot);
+
+            ARGameManager.I.RegisterSpawned(go);
+            _totalSpawnedThisRound++;
+        }
     }
 
-    private void DisablePlanes()
+    // around(바닥 터치 지점) 근처에서 랜덤 뽑되,
+    // 카메라 기준 거리 조건(min~max) 만족하는 점을 찾는 방식
+    Vector3 FindDonutPosition(Vector3 around, Vector3 camPos, float minD, float maxD)
+    {
+        // 최대 20번 시도해서 조건 만족하는 점 찾기(실패하면 그냥 around 근처로)
+        for (int tries = 0; tries < 20; tries++)
+        {
+            float angle = Random.Range(0f, Mathf.PI * 2f);
+            float radius = Random.Range(0.2f, 1.2f); // 터치 지점 주변 퍼짐(원하면 조절)
+            Vector3 candidate = new Vector3(
+                around.x + Mathf.Cos(angle) * radius,
+                around.y,
+                around.z + Mathf.Sin(angle) * radius
+            );
+
+            float d = Vector3.Distance(new Vector3(camPos.x, candidate.y, camPos.z), candidate);
+            if (d >= minD && d <= maxD)
+                return candidate;
+        }
+
+        return around; // 못 찾으면 그냥 터치 지점
+    }
+
+    void DisablePlanes()
     {
         if (planeManager == null) return;
 
@@ -101,20 +150,57 @@ public class ARTapToStartSpawner : MonoBehaviour
             plane.gameObject.SetActive(false);
     }
 
-    private bool IsPointerOverUI(Vector2 screenPos)
+    bool IsPointerOverUI(Vector2 screenPos, int fingerId)
     {
         if (EventSystem.current == null) return false;
 
-        var eventData = new PointerEventData(EventSystem.current);
-        eventData.position = screenPos;
+        // 터치면 fingerId 기반 체크가 더 정확
+        if (fingerId >= 0)
+            if (EventSystem.current.IsPointerOverGameObject(fingerId)) return true;
 
+        var eventData = new PointerEventData(EventSystem.current) { position = screenPos };
         var results = new List<RaycastResult>();
         EventSystem.current.RaycastAll(eventData, results);
         return results.Count > 0;
     }
 
-    public void ResetSpawnState()
+    bool TryGetPressDown(out Vector2 screenPos, out int fingerId)
     {
-        _hasSpawnedThisRound = false;
+        fingerId = -1;
+
+        if (Input.touchCount > 0)
+        {
+            Touch t = Input.GetTouch(0);
+            if (t.phase == TouchPhase.Began)
+            {
+                screenPos = t.position;
+                fingerId = t.fingerId;
+                return true;
+            }
+        }
+
+        if (Input.GetMouseButtonDown(0))
+        {
+            screenPos = Input.mousePosition;
+            return true;
+        }
+
+        screenPos = default;
+        return false;
+    }
+
+    // Restart에서 호출
+    public void ResetSpawnState(bool reEnablePlanes = true)
+    {
+        _started = false;
+        _nextAddTime = 0f;
+        _totalSpawnedThisRound = 0;
+
+        if (reEnablePlanes && planeManager != null)
+        {
+            planeManager.enabled = true;
+            foreach (var plane in planeManager.trackables)
+                plane.gameObject.SetActive(true);
+        }
     }
 }
